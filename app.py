@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -160,6 +161,80 @@ def load_data():
 # ============================================================
 DATA, USING_DEMO = load_data()
 
+# ------------------------------------------------------------
+# Trained Random Forest models (Simulator tab)
+# ------------------------------------------------------------
+# One model per department: rf_finishing.pkl for Finishing,
+# rf_sewing.pkl for Sewing. They were trained on a DataFrame, so
+# each model carries its own feature_names_in_ — the Finishing
+# model has 18 features (no "wip", which is mostly missing for
+# that department in the source data) and the Sewing model has
+# 19 (it includes "wip"). Both were trained on one-hot encoded
+# "quarter" and "day" columns, so those are expanded dynamically
+# in _model_row() below rather than hardcoded here.
+MODEL_PATHS = {
+    "Finishing": [APP_DIR / "models" / "rf_finishing.pkl", APP_DIR / "rf_finishing.pkl"],
+    "Sewing": [APP_DIR / "models" / "rf_sewing.pkl", APP_DIR / "rf_sewing.pkl"],
+}
+
+# Fallback numeric feature order — only used if a loaded model has
+# no feature_names_in_ (e.g. it was fit on a plain numpy array).
+MODEL_FEATURES = [
+    "team",
+    "targeted_productivity",
+    "smv",
+    "wip",
+    "over_time",
+    "incentive",
+    "idle_time",
+    "idle_men",
+    "no_of_style_change",
+    "no_of_workers",
+]
+
+
+def _load_rf_model(paths):
+    for path in paths:
+        if path.exists():
+            try:
+                return joblib.load(path)
+            except Exception as exc:
+                print(f"Could not load model at {path}: {exc}")
+    return None
+
+
+RF_MODELS = {department: _load_rf_model(paths) for department, paths in MODEL_PATHS.items()}
+USING_DEMO_MODELS = any(model is None for model in RF_MODELS.values())
+
+
+def model_numeric_features(model):
+    """The plain numeric inputs a model expects (i.e. everything
+    except its one-hot quarter_*/day_* columns)."""
+    names = list(getattr(model, "feature_names_in_", MODEL_FEATURES))
+    return [n for n in names if not n.startswith("quarter_") and not n.startswith("day_")]
+
+
+def _model_row(model, raw):
+    """Build a single-row DataFrame with exactly the columns (and
+    order) a model expects, expanding the simulator's chosen
+    quarter/day into the one-hot columns the model was trained on."""
+    names = list(getattr(model, "feature_names_in_", MODEL_FEATURES))
+    row = {}
+    for name in names:
+        if name in raw:
+            row[name] = float(raw[name])
+        elif name.startswith("quarter_"):
+            row[name] = 1.0 if str(raw.get("quarter")) == name.split("_", 1)[1] else 0.0
+        elif name.startswith("day_"):
+            row[name] = 1.0 if str(raw.get("day")) == name.split("_", 1)[1] else 0.0
+        else:
+            row[name] = 0.0
+    return pd.DataFrame([row], columns=names)
+
+
+def predict_productivity(model, raw):
+    return float(model.predict(_model_row(model, raw))[0])
+
 
 def pretty_feature(name):
     return {
@@ -175,7 +250,7 @@ def pretty_feature(name):
 
 
 def feature_importance_table(df):
-    """Simple association placeholder; replace with real model/SHAP later."""
+    """Simple association placeholder; replace with real model/SHAP values later."""
     rows = []
     for feature in FEATURES:
         temp = df[[feature, "actual_productivity"]].dropna()
@@ -229,6 +304,40 @@ TEAM_SUMMARY = (
 )
 
 DRIVER_SUMMARY = feature_importance_table(DATA)
+
+# ------------------------------------------------------------
+# Overview tab only: fixed Spearman correlations (with actual
+# productivity) supplied by the team's analysis. This is
+# intentionally separate from DRIVER_SUMMARY above, which the
+# Drivers and Diagnostics tabs still use unchanged.
+# ------------------------------------------------------------
+OVERVIEW_SPEARMAN_CORR = {
+    "team": -0.163696,
+    "targeted_productivity": 0.448375,
+    "smv": -0.122303,
+    "wip": -0.058103,
+    "over_time": -0.075755,
+    "incentive": 0.217064,
+    "idle_time": -0.147596,
+    "idle_men": -0.147658,
+    "no_of_style_change": -0.265829,
+    "no_of_workers": -0.035395,
+}
+
+TOP_N_OVERVIEW_DRIVERS = 7
+
+OVERVIEW_TOP_DRIVERS = (
+    pd.DataFrame(
+        {
+            "feature": list(OVERVIEW_SPEARMAN_CORR.keys()),
+            "correlation": list(OVERVIEW_SPEARMAN_CORR.values()),
+        }
+    )
+    .assign(abs_correlation=lambda d: d.correlation.abs())
+    .sort_values("abs_correlation", ascending=False)
+    .head(TOP_N_OVERVIEW_DRIVERS)
+    .reset_index(drop=True)
+)
 
 _DATA_DAY = DATA.copy()
 _DATA_DAY["day_name"] = pd.Categorical(
@@ -558,7 +667,7 @@ OVERVIEW_UI = page_shell(
                 ui.div("Top Drivers Associated with Productivity", class_="card-title"),
                 output_widget("driver_bar_small"),
                 ui.div(
-                    "Simple association proxy — replace with model/SHAP values.",
+                    "Spearman correlation with actual productivity — green increases it, red decreases it.",
                     style="font-size:10px;color:#8a97a9",
                 ),
                 class_="card",
@@ -722,6 +831,13 @@ SIMULATOR_UI = page_shell(
             ui.div(
                 ui.div("Input Parameters", class_="card-title"),
                 ui.input_select("sim_department", "Department", ["Sewing", "Finishing"]),
+                ui.input_select("sim_quarter", "Quarter", ["1", "2", "3", "4", "5"], selected="1"),
+                ui.input_select(
+                    "sim_day",
+                    "Day of Week",
+                    ["Monday", "Tuesday", "Wednesday", "Thursday", "Saturday", "Sunday"],
+                    selected="Wednesday",
+                ),
                 ui.input_numeric("sim_team", "Team", 5, min=1, max=100),
                 ui.input_numeric("sim_workers", "Workers", 55, min=1),
                 ui.input_numeric("sim_style", "Style Changes", 1, min=0),
@@ -976,10 +1092,29 @@ def server(input, output, session):
 
     @render_widget
     def driver_bar_small():
-        d = DRIVER_SUMMARY.head(7).copy()
-        d["feature"] = d.feature.map(pretty_feature)
-        fig = px.bar(d, x="importance", y="feature", orientation="h", text_auto=".2f")
-        fig.update_layout(height=250, margin=dict(l=5, r=15, t=5, b=10), yaxis=dict(categoryorder="total ascending"), uirevision="driver-small")
+        # Sorted ascending by magnitude so the strongest association
+        # (either direction) lands at the top of the horizontal bar chart.
+        d = OVERVIEW_TOP_DRIVERS.sort_values("abs_correlation", ascending=True).copy()
+        d["feature_label"] = d.feature.map(pretty_feature)
+        d["direction"] = np.where(d.correlation >= 0, "Positive", "Negative")
+        fig = px.bar(
+            d,
+            x="correlation",
+            y="feature_label",
+            orientation="h",
+            color="direction",
+            color_discrete_map={"Positive": "#20a56a", "Negative": "#e24c4c"},
+            text_auto=".2f",
+        )
+        fig.add_vline(x=0, line_color="#c8d3e0")
+        fig.update_layout(
+            height=250,
+            margin=dict(l=5, r=15, t=5, b=10),
+            yaxis=dict(title=""),
+            xaxis_title="Spearman correlation",
+            showlegend=False,
+            uirevision="driver-small",
+        )
         return fig
 
     # ---------------- Drivers ----------------
@@ -1233,34 +1368,44 @@ def server(input, output, session):
     # ---------------- Simulator ----------------
     @reactive.calc
     def simulated_prediction():
+        department = input.sim_department()
         x = {
+            "team": input.sim_team(),
+            "targeted_productivity": input.sim_target(),
+            "smv": input.sim_smv(),
+            "wip": input.sim_wip(),
+            "over_time": input.sim_overtime(),
             "incentive": input.sim_incentive(),
             "idle_time": input.sim_idle(),
-            "over_time": input.sim_overtime(),
-            "smv": input.sim_smv(),
-            "no_of_workers": input.sim_workers(),
-            "no_of_style_change": input.sim_style(),
-            "wip": input.sim_wip(),
             "idle_men": input.sim_idle_men(),
+            "no_of_style_change": input.sim_style(),
+            "no_of_workers": input.sim_workers(),
+            "quarter": input.sim_quarter(),
+            "day": input.sim_day(),
         }
 
-        # Placeholder model formula. Replace with your trained model.
-        pred = (
-            0.55
-            + 0.005 * x["incentive"]
-            - 0.0027 * x["idle_time"]
-            - 0.00006 * x["over_time"]
-            + 0.0021 * x["smv"]
-            + 0.0005 * x["no_of_workers"]
-            - 0.018 * x["no_of_style_change"]
-            + 0.00025 * x["wip"]
-            - 0.003 * x["idle_men"]
-        )
-        return x, float(np.clip(pred, 0, 1))
+        model = RF_MODELS.get(department)
+        if model is not None:
+            pred = predict_productivity(model, x)
+        else:
+            # Fallback placeholder formula — used only if rf_sewing.pkl /
+            # rf_finishing.pkl aren't found next to this app.
+            pred = (
+                0.55
+                + 0.005 * x["incentive"]
+                - 0.0027 * x["idle_time"]
+                - 0.00006 * x["over_time"]
+                + 0.0021 * x["smv"]
+                + 0.0005 * x["no_of_workers"]
+                - 0.018 * x["no_of_style_change"]
+                + 0.00025 * x["wip"]
+                - 0.003 * x["idle_men"]
+            )
+        return x, department, float(np.clip(pred, 0, 1))
 
     @render.ui
     def sim_big_prediction():
-        _, prediction = simulated_prediction()
+        _, _, prediction = simulated_prediction()
         target = input.sim_target()
         gap = prediction - target
         return ui.div(
@@ -1274,37 +1419,75 @@ def server(input, output, session):
 
     @render_widget
     def sim_contribution():
-        x, _ = simulated_prediction()
-        baseline = DATA[FEATURES].mean(numeric_only=True)
-        coef = {
-            "incentive": 0.005,
-            "idle_time": -0.0027,
-            "over_time": -0.00006,
-            "smv": 0.0021,
-            "no_of_workers": 0.0005,
-            "no_of_style_change": -0.018,
-            "wip": 0.00025,
-            "idle_men": -0.003,
-        }
-        rows = [
-            (pretty_feature(f), (x[f] - baseline[f]) * coef[f])
-            for f in FEATURES
-        ]
-        d = pd.DataFrame(rows, columns=["feature", "contribution"])
+        x, department, prediction = simulated_prediction()
+        model = RF_MODELS.get(department)
+
+        if model is not None:
+            numeric_features = model_numeric_features(model)
+        else:
+            numeric_features = [f for f in MODEL_FEATURES if f in x]
+
+        dept_data = DATA.loc[DATA.department == department, numeric_features]
+        if dept_data.empty:
+            dept_data = DATA[numeric_features]
+        baseline = dept_data.mean(numeric_only=True)
+
+        if model is not None:
+            # Local sensitivity: for each feature, swap in the department's
+            # average value (holding everything else fixed) and see how much
+            # the prediction moves. This is model-agnostic, so it works the
+            # same way for the trained RF models as the old linear formula did.
+            contributions = {}
+            for feature in numeric_features:
+                x_baseline = dict(x)
+                x_baseline[feature] = baseline[feature]
+                contributions[feature] = prediction - predict_productivity(model, x_baseline)
+        else:
+            coef = {
+                "incentive": 0.005,
+                "idle_time": -0.0027,
+                "over_time": -0.00006,
+                "smv": 0.0021,
+                "no_of_workers": 0.0005,
+                "no_of_style_change": -0.018,
+                "wip": 0.00025,
+                "idle_men": -0.003,
+            }
+            contributions = {
+                f: (x[f] - baseline[f]) * coef.get(f, 0.0) for f in numeric_features
+            }
+
+        d = pd.DataFrame(
+            {"feature": list(contributions.keys()), "contribution": list(contributions.values())}
+        )
+        d["feature"] = d.feature.map(pretty_feature)
         d = d.reindex(d.contribution.abs().sort_values(ascending=False).index).head(7).sort_values("contribution")
         fig = px.bar(d, x="contribution", y="feature", orientation="h", text_auto=".2f")
         fig.add_vline(x=0)
-        fig.update_layout(height=310, margin=dict(l=30, r=15, t=5, b=20), xaxis_title="Contribution to prediction (demo proxy)", yaxis_title="", uirevision="sim-contribution")
+        fig.update_layout(height=310, margin=dict(l=30, r=15, t=5, b=20), xaxis_title=f"Contribution to prediction vs. {department} average", yaxis_title="", uirevision="sim-contribution")
         return fig
 
     @render.ui
     def sim_note():
+        department = input.sim_department()
+        if RF_MODELS.get(department) is None:
+            body = (
+                f"rf_{department.lower()}.pkl was not found next to this app, so "
+                "predictions for this department fall back to the original "
+                "placeholder formula. Add the file (or a models/ subfolder "
+                "containing it) to the app directory to use your trained model."
+            )
+        else:
+            body = (
+                "Predictions come from your trained Random Forest models — "
+                "rf_sewing.pkl for the Sewing department and rf_finishing.pkl "
+                "for the Finishing department (100 trees each). Quarter and Day "
+                "of Week are included as inputs because both models were "
+                "trained on one-hot encoded versions of them."
+            )
         return ui.div(
             ui.div("Model integration point", class_="card-title"),
-            ui.p(
-                "Replace simulated_prediction() with your trained model and add "
-                "real SHAP/local explanations for the final project."
-            ),
+            ui.p(body),
             class_="card",
         )
 
