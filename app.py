@@ -1,4 +1,7 @@
 from pathlib import Path
+import asyncio
+import json
+import os
 
 import joblib
 import numpy as np
@@ -1033,6 +1036,156 @@ def server(input, output, session):
             )
         return ui.div(*content, class_="page-workspace has-chat" if has_chat else "page-workspace")
 
+    def chart_context(page_key):
+        context = {
+            "page": page_key,
+            "dataset_rows": int(len(DATA)),
+            "overall_average_productivity_pct": round(float(DATA.actual_productivity.mean() * 100), 2),
+            "overall_average_target_pct": round(float(DATA.targeted_productivity.mean() * 100), 2),
+        }
+
+        if page_key == "overview":
+            context["daily_actual_and_target_pct_last_10"] = (
+                OVERVIEW_DAILY.tail(10)
+                .assign(
+                    actual_pct=lambda d: (d.actual * 100).round(2),
+                    target_pct=lambda d: (d.target * 100).round(2),
+                )[["date", "actual_pct", "target_pct"]]
+                .to_dict(orient="records")
+            )
+            context["department_actual_and_target_pct"] = (
+                DEPARTMENT_SUMMARY.assign(
+                    actual_pct=lambda d: (d.actual * 100).round(2),
+                    target_pct=lambda d: (d.target * 100).round(2),
+                )[["department", "actual_pct", "target_pct"]]
+                .to_dict(orient="records")
+            )
+            context["team_average_productivity_pct_lowest_8"] = [
+                {
+                    "team": int(row.team),
+                    "actual_pct": round(float(row.actual_productivity * 100), 2),
+                }
+                for row in TEAM_SUMMARY.head(8).itertuples(index=False)
+            ]
+            context["strongest_feature_associations"] = OVERVIEW_TOP_DRIVERS[
+                ["feature", "correlation"]
+            ].to_dict(orient="records")
+        elif page_key == "drivers":
+            context["feature_associations_with_productivity"] = [
+                {
+                    "feature": feature,
+                    "correlation": round(float(DATA[feature].corr(DATA.actual_productivity)), 4),
+                }
+                for feature in FEATURES
+            ]
+            context["feature_importance_ranking"] = DRIVER_SUMMARY.head(10).to_dict(orient="records")
+        elif page_key == "diagnostics":
+            selected = diagnostic_view()
+            context["active_filters"] = {
+                "date": str(input.diag_date()),
+                "department": input.diag_department(),
+                "team": input.diag_team(),
+            }
+            context["filtered_observation_count"] = int(len(selected))
+            if not selected.empty:
+                context["filtered_actual_productivity_pct"] = round(
+                    float(selected.actual_productivity.mean() * 100), 2
+                )
+                context["filtered_target_productivity_pct"] = round(
+                    float(selected.targeted_productivity.mean() * 100), 2
+                )
+                context["filtered_feature_averages"] = (
+                    selected[FEATURES].mean().round(2).dropna().to_dict()
+                )
+                context["strongest_filtered_associations"] = feature_importance_table(
+                    selected
+                ).head(5).to_dict(orient="records")
+        elif page_key == "forecasting":
+            context["weekly_actual_and_forecast_pct"] = (
+                weekly_forecast_data()
+                .tail(12)
+                .assign(
+                    actual_pct=lambda d: (d.actual * 100).round(2),
+                    forecast_pct=lambda d: (d.forecast * 100).round(2),
+                    lower_pct=lambda d: (d.lower * 100).round(2),
+                    upper_pct=lambda d: (d.upper * 100).round(2),
+                )[["date", "actual_pct", "forecast_pct", "lower_pct", "upper_pct"]]
+                .to_dict(orient="records")
+            )
+
+        return json.dumps(context, default=str)
+
+    def request_gemini(question, context, history, api_key):
+        from google import genai
+        from google.genai import types
+
+        prompt = (
+            "You are GarmentPro BI's productivity analyst. Answer the user's question "
+            "using the current page's chart data and recent conversation below. Be concise, "
+            "cite relevant values, do not invent data, and distinguish correlation from causation. "
+            "If the supplied data does not answer the question, say so.\n\n"
+            f"Current page chart data (JSON):\n{context}\n\n"
+            f"Recent conversation:\n{history}\n\n"
+            f"User question:\n{question}"
+        )
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.3),
+        )
+        return response.text or "Google servers are busy as of the moment"
+
+    @reactive.extended_task
+    async def gemini_task(question, context, history, api_key):
+        try:
+            return await asyncio.to_thread(
+                request_gemini, question, context, history, api_key
+            )
+        except Exception:
+            return "Google servers are busy as of the moment"
+
+    def submit_question(question):
+        question = question.strip()
+        if not question:
+            return
+
+        previous_messages = chat_messages()
+        chat_messages.set(previous_messages + [{"role": "user", "text": question}])
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            chat_messages.set(
+                chat_messages()
+                + [
+                    {
+                        "role": "assistant",
+                        "text": assistant_answer(question)
+                        + " Configure GEMINI_API_KEY to enable Gemini responses.",
+                    }
+                ]
+            )
+            return
+
+        history = "\n".join(
+            f"{message['role']}: {message['text']}"
+            for message in previous_messages[-8:]
+        )
+        gemini_task.invoke(
+            question,
+            chart_context(page_state()),
+            history,
+            api_key,
+        )
+
+    @reactive.effect
+    @reactive.event(gemini_task.status)
+    def _append_gemini_response():
+        if gemini_task.status() == "success":
+            chat_messages.set(
+                chat_messages()
+                + [{"role": "assistant", "text": gemini_task.result()}]
+            )
+
     # ---------------- Overview ----------------
     @render.ui
     def ov_kpi_1():
@@ -1530,8 +1683,7 @@ def server(input, output, session):
             {
                 "role": "assistant",
                 "text": (
-                    "Hi! I can summarize the current productivity data. This starter "
-                    "version uses a rule-based insight engine; connect your LLM/API here later."
+                    "Hi! Ask me about trends, teams, or drivers in the charts on the current page."
                 ),
             }
         ]
@@ -1611,41 +1763,29 @@ def server(input, output, session):
 
     @render.ui
     def chat_history():
+        messages = [
+            ui.div(
+                message["text"],
+                class_="chat-user" if message["role"] == "user" else "chat-ai",
+            )
+            for message in chat_messages()
+        ]
+        if gemini_task.status() == "running":
+            messages.append(ui.div("Analyzing the current page charts...", class_="chat-ai"))
         return ui.div(
-            *[
-                ui.div(
-                    message["text"],
-                    class_="chat-user" if message["role"] == "user" else "chat-ai",
-                )
-                for message in chat_messages()
-            ]
+            *messages
         )
 
     @reactive.effect
     @reactive.event(input.chat_send)
     def _send_chat():
-        question = input.chat_input().strip()
-        if question:
-            chat_messages.set(
-                chat_messages()
-                + [
-                    {"role": "user", "text": question},
-                    {"role": "assistant", "text": assistant_answer(question)},
-                ]
-            )
+        submit_question(input.chat_input())
 
     def make_quick_handler(index):
         @reactive.effect
         @reactive.event(getattr(input, f"faq_{index}"))
         def _quick():
-            question = FAQ_QUESTIONS[index]
-            chat_messages.set(
-                chat_messages()
-                + [
-                    {"role": "user", "text": question},
-                    {"role": "assistant", "text": assistant_answer(question)},
-                ]
-            )
+            submit_question(FAQ_QUESTIONS[index])
 
         return _quick
 
