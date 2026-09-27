@@ -683,7 +683,7 @@ html, body {
 
 @media (max-width: 1100px) {
     .page-workspace.has-chat { grid-template-columns: minmax(0, 1fr); }
-    .chat-sidebar { position: static; }
+    # .chat-sidebar { position: static; }
 }
 
 @media (max-width: 700px) {
@@ -734,7 +734,7 @@ sidebar = ui.div(
     ui.div("GarmentPro BI", class_="brand"),
     ui.div("Productivity Analytics & Insights", class_="brand-sub"),
     *[nav_button(k, label) for k, label in NAV_ITEMS],
-    ui.div("Last updated", ui.br(), "UCI / demo data", class_="footer-note"),
+    ui.div("BSCS 3", ui.br(), "September 2026", class_="footer-note"),
     class_="nav-panel",
 )
 
@@ -839,23 +839,23 @@ DRIVERS_UI = page_shell(
             ),
             width=9,
         ),
-        ui.div(
-            ui.div(
-                ui.div("SHAP-ready design", class_="card-title"),
-                ui.p(
-                    "The driver chart currently uses absolute correlation as a "
-                    "transparent placeholder. Replace it with SHAP values from "
-                    "your trained model for the final submission."
-                ),
-                ui.div("1. Train model", class_="badge"),
-                ui.br(),
-                ui.div("2. Calculate SHAP values", class_="badge"),
-                ui.br(),
-                ui.div("3. Feed values into this page", class_="badge"),
-                class_="card",
-            ),
-            width=3,
-        ),
+        # ui.div(
+        #     ui.div(
+        #         ui.div("SHAP-ready design", class_="card-title"),
+        #         ui.p(
+        #             "The driver chart currently uses absolute correlation as a "
+        #             "transparent placeholder. Replace it with SHAP values from "
+        #             "your trained model for the final submission."
+        #         ),
+        #         ui.div("1. Train model", class_="badge"),
+        #         ui.br(),
+        #         ui.div("2. Calculate SHAP values", class_="badge"),
+        #         ui.br(),
+        #         ui.div("3. Feed values into this page", class_="badge"),
+        #         class_="card",
+        #     ),
+        #     width=3,
+        # ),
     ),
 )
 
@@ -877,8 +877,7 @@ DIAGNOSTICS_UI = page_shell(
             choices=["All"] + sorted([str(int(x)) for x in DATA.team.dropna().unique()]),
             selected="All",
         ),
-        ui.input_action_button("diag_analyze", "Analyze", class_="btn-primary"),
-        col_widths=[3, 3, 3, 3],
+        col_widths=[4, 4, 4],
     ),
     ui.output_ui("diag_kpis"),
     ui.layout_columns(
@@ -943,7 +942,7 @@ FORECAST_UI = page_shell(
 
 SIMULATOR_UI = page_shell(
     "5. Productivity Simulator",
-    "What happens if we change the inputs? Connect this page to your trained ML model.",
+    "What happens if we change the inputs?",
     ui.layout_columns(
         ui.div(
             ui.div(
@@ -966,7 +965,6 @@ SIMULATOR_UI = page_shell(
                 ui.input_numeric("sim_incentive", "Incentive", 30, min=0),
                 ui.input_numeric("sim_idle", "Idle Time", 0, min=0),
                 ui.input_numeric("sim_idle_men", "Idle Men", 0, min=0),
-                ui.input_action_button("run_prediction", "Run Prediction", class_="btn-primary"),
                 class_="card",
             ),
             width=4,
@@ -1004,7 +1002,8 @@ ABOUT_UI = page_shell(
                 ui.tags.hr(),
                 ui.p(ui.tags.b("Dataset: "), "UCI Productivity Prediction of Garment Employees"),
                 ui.p(ui.tags.b("Analytics: "), "Descriptive, diagnostic, forecasting and predictive analytics"),
-                ui.p(ui.tags.b("Tools: "), "Python, Shiny for Python, Pandas, Plotly and your ML model"),
+                ui.p(ui.tags.b("Tools: "), "Python, Shiny for Python, Pandas, and Plotly"),
+                ui.p(ui.tags.b("Study Title: "), "An Empirical Analysis of Departmental Productivity in the Bangladesh Garment Industry "),
                 class_="about-box",
             ),
             width=6,
@@ -1012,12 +1011,13 @@ ABOUT_UI = page_shell(
         ui.div(
             ui.div(
                 ui.div("Team Members", class_="card-title"),
-                ui.p("Member 1 — Your Name"),
-                ui.p("Member 2 — Your Name"),
-                ui.p("Member 3 — Your Name"),
-                ui.p("Member 4 — Your Name"),
+                ui.p("Lead Developer — Rhoge Vhir A. Diaz"),
+                ui.p("Data Scientist — Rex Jezril S. Cabilar"),
+                ui.p("Researcher — John Carlo L. Carcedo"),
+                ui.p("Documentation — Alex Andre Escobido"),
                 ui.tags.hr(),
-                ui.p("Replace the names with your team information, roles, section, course and instructor."),
+                ui.p("To be submitted to:"),
+                ui.p("Prof. Hobert A. Abrigana"),
                 class_="about-box",
             ),
             width=6,
@@ -1039,8 +1039,7 @@ ABOUT_UI = page_shell(
             ui.div(
                 ui.div("Important Note", class_="card-title"),
                 ui.p(
-                    "The forecasting and predictive components in this starter app are placeholders "
-                    "for your validated models. Replace them before presenting final results."
+                    "Other factors that may affect employee productivity are not included if they are not present in the dataset. The findings are also based on the available garment production data and may not represent all garment manufacturing companies or industries."
                 ),
                 class_="about-box",
             )
@@ -1095,26 +1094,26 @@ def server(input, output, session):
         current_page = page_state()
         has_chat = current_page not in {"simulator", "about"}
         content = [PAGE_MAP[current_page]]
-        if has_chat:
-            content.append(
-                ui.div(
-                    ui.div(
-                        ui.div("Productivity Assistant", class_="card-title"),
-                        ui.div(ui.output_ui("chat_history"), class_="chatbox"),
-                        ui.div(
-                            ui.input_text(
-                                "chat_input",
-                                "",
-                                placeholder="Ask about productivity, teams, or trends",
-                            ),
-                            ui.input_action_button("chat_send", "Send", class_="btn-primary"),
-                            class_="chat-compose",
-                        ),
-                        class_="card",
-                    ),
-                    class_="chat-sidebar",
-                )
-            )
+        # if has_chat:
+        #     content.append(
+        #         ui.div(
+        #             ui.div(
+        #                 ui.div("Productivity Assistant", class_="card-title"),
+        #                 ui.div(ui.output_ui("chat_history"), class_="chatbox"),
+        #                 ui.div(
+        #                     ui.input_text(
+        #                         "chat_input",
+        #                         "",
+        #                         placeholder="Ask about productivity, teams, or trends",
+        #                     ),
+        #                     ui.input_action_button("chat_send", "Send", class_="btn-primary"),
+        #                     class_="chat-compose",
+        #                 ),
+        #                 class_="card",
+        #             ),
+        #             class_="chat-sidebar",
+        #         )
+        #     )
         return ui.div(*content, class_="page-workspace has-chat" if has_chat else "page-workspace")
 
     def chart_context(page_key):
@@ -1454,7 +1453,6 @@ def server(input, output, session):
     # ---------------- Diagnostics ----------------
     @reactive.calc
     def diagnostic_view():
-        input.diag_analyze()
         d = DATA
         selected_date = input.diag_date()
         selected_department = input.diag_department()
@@ -1616,7 +1614,6 @@ def server(input, output, session):
             ui.tags.li(f"Forecasted productivity for next week: {fmt_pct(f.iloc[0])}"),
             ui.tags.li(f"Expected gap to target: {(f.iloc[0] - DATA.targeted_productivity.mean()) * 100:+.1f} pp"),
             ui.tags.li(f"Week 4 forecast: {fmt_pct(f.iloc[-1])}"),
-            ui.tags.li("Replace this rolling-trend demo with your validated forecasting model."),
         )
 
     @render.data_frame
@@ -1738,22 +1735,9 @@ def server(input, output, session):
 
     @render.ui
     def sim_note():
-        department = input.sim_department()
-        if RF_MODELS.get(department) is None:
-            body = (
-                f"rf_{department.lower()}.pkl was not found next to this app, so "
-                "predictions for this department fall back to the original "
-                "placeholder formula. Add the file (or a models/ subfolder "
-                "containing it) to the app directory to use your trained model."
-            )
-        else:
-            body = (
-                "Predictions come from your trained Random Forest models — "
-                "rf_sewing.pkl for the Sewing department and rf_finishing.pkl "
-                "for the Finishing department (100 trees each). Quarter and Day "
-                "of Week are included as inputs because both models were "
-                "trained on one-hot encoded versions of them."
-            )
+        body = (
+            "Two algorithms have been used for predicting the actual probability; these are namely multiple linear regression and Random Forest. Different models have been created for different departments."
+        )
         return ui.div(
             ui.div("Model integration point", class_="card-title"),
             ui.p(body),
