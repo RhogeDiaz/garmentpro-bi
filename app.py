@@ -11,6 +11,8 @@ import plotly.graph_objects as go
 
 from shiny import App, ui, render, reactive
 from shinywidgets import output_widget, render_widget
+from insight_bot.chatbot import chat_ui, register_chat
+from insight_bot.context_builder import build_chart_context
 
 # ============================================================
 # GarmentPro BI — Shiny for Python
@@ -381,6 +383,85 @@ WEEKLY_HISTORY = (
 )
 
 
+def build_faq_answers():
+    weekly = DATA.set_index("date").resample("W").agg(
+        actual=("actual_productivity", "mean"),
+        target=("targeted_productivity", "mean"),
+    ).dropna(subset=["actual"])
+    previous, latest = weekly.iloc[-2], weekly.iloc[-1]
+    change_pp = (latest.actual - previous.actual) * 100
+    latest_label = weekly.index[-1].strftime("%b %d, %Y")
+    previous_label = weekly.index[-2].strftime("%b %d, %Y")
+    latest_bucket_rows = DATA.loc[
+        DATA.date.dt.to_period("W").dt.end_time.dt.normalize() == weekly.index[-1].normalize()
+    ]
+    partial_note = (
+        " This is a partial week because the dataset ends before the week is complete."
+        if latest_bucket_rows.date.max().normalize() < weekly.index[-1].normalize()
+        else ""
+    )
+
+    team_summary = DATA.groupby("team").agg(
+        actual=("actual_productivity", "mean"),
+        target=("targeted_productivity", "mean"),
+    )
+    below_target = team_summary.loc[team_summary.actual < team_summary.target].copy()
+    below_target["gap"] = below_target.actual - below_target.target
+    below_target = below_target.sort_values("gap")
+    lowest_teams = "; ".join(
+        f"Team {int(team)}: {row.actual:.1%} actual vs {row.target:.1%} target "
+        f"({row.gap * 100:+.1f} pp)"
+        for team, row in below_target.head(5).iterrows()
+    ) or "No team averages are below their average targets."
+
+    top_drivers = DRIVER_SUMMARY.head(5)
+    driver_list = ", ".join(
+        f"{pretty_feature(row.feature)} ({row.importance:.2f})"
+        for row in top_drivers.itertuples()
+    )
+
+    history = WEEKLY_HISTORY.dropna(subset=["actual"])
+    values = history.actual.to_numpy(dtype=float)
+    window = min(4, len(values))
+    baseline = float(values[-window:].mean())
+    slope = float(np.polyfit(np.arange(len(values)), values, 1)[0]) if len(values) >= 3 else 0.0
+    forecast = float(np.clip(baseline + slope, 0, 1))
+    target_average = DATA.targeted_productivity.mean()
+
+    return [
+        (
+            "Why did productivity fall last week?",
+            f"It did not fall in the latest available weekly bucket: average productivity "
+            f"increased from {previous.actual:.1%} (week ending {previous_label}) to "
+            f"{latest.actual:.1%} (week ending {latest_label}), a {change_pp:+.1f} pp change."
+            f"{partial_note} The strongest overall association is {pretty_feature(DRIVER_SUMMARY.iloc[0].feature)}; "
+            "that is a relationship in the data, not proof of a cause.",
+        ),
+        (
+            "Which teams are below target?",
+            f"{len(below_target)} of {len(team_summary)} teams have an average productivity below "
+            f"their average target. The largest gaps are: {lowest_teams}. These are full-period "
+            "team averages, not just the latest day.",
+        ),
+        (
+            "What factors affect productivity most?",
+            f"The strongest simple associations with actual productivity are {driver_list}. "
+            "Scores are absolute correlations, so they show association strength only; they do "
+            "not establish that these factors caused productivity to change.",
+        ),
+        (
+            "What is the forecast for next week?",
+            f"The dashboard's rolling-trend demo estimates next-week productivity at {forecast:.1%}, "
+            f"about {(forecast - target_average) * 100:+.1f} pp versus the dataset-wide average target "
+            f"of {target_average:.1%}. This is a simple historical projection, not a validated "
+            "production forecast.",
+        ),
+    ]
+
+
+OVERVIEW_FAQS = build_faq_answers()
+
+
 # ============================================================
 # STYLING
 # ============================================================
@@ -410,7 +491,7 @@ html, body {
 
 .dashboard-shell {
   display: grid;
-  grid-template-columns: 250px minmax(0, 1fr);
+    grid-template-columns: 250px minmax(0, 1fr) 350px;
   min-height: 100vh;
   padding: 0 !important;
   align-items: stretch;
@@ -476,6 +557,7 @@ html, body {
   padding: 28px;
 }
 
+<<<<<<< HEAD
 .page-workspace {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -498,6 +580,18 @@ html, body {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 8px;
     margin-top: 10px;
+=======
+.assistant-panel {
+    min-width: 0;
+    height: 100vh;
+    padding: 16px 12px;
+    position: sticky;
+    top: 0;
+    overflow-y: auto;
+    box-sizing: border-box;
+    background: var(--card);
+    border-left: 1px solid var(--line);
+>>>>>>> main
 }
 
 .page-title {
@@ -598,10 +692,18 @@ html, body {
 }
 .footer-note { color: #9aabc0; font-size: 10px; margin-top: 30px; }
 
-@media (max-width: 900px) {
-  .dashboard-shell { grid-template-columns: 190px minmax(0,1fr); }
+@media (max-width: 1200px) {
+    .dashboard-shell { grid-template-columns: 190px minmax(0,1fr); }
   .content-panel { padding: 18px; }
   .brand { white-space: normal; }
+    .assistant-panel {
+        grid-column: 2;
+        position: static;
+        height: 520px;
+        padding: 12px 18px;
+        border-left: 0;
+        border-top: 1px solid var(--line);
+    }
 }
 
 @media (max-width: 1100px) {
@@ -613,6 +715,7 @@ html, body {
   .dashboard-shell { grid-template-columns: 1fr; }
   .nav-panel { position: relative; height: auto; min-height: unset; }
   .content-panel { padding: 14px; }
+    .assistant-panel { grid-column: 1; height: 520px; padding: 10px 14px; }
   .page-title { font-size: 23px; }
 }
 """
@@ -718,8 +821,15 @@ OVERVIEW_UI = page_shell(
             ui.div(
                 ui.div("Productivity Assistant", class_="card-title"),
                 *[
+<<<<<<< HEAD
                     ui.input_action_button(f"faq_{i}", q, class_="question-chip")
                     for i, q in enumerate(FAQ_QUESTIONS)
+=======
+                    ui.input_action_button(
+                        f"faq_{index}", question, class_="question-chip"
+                    )
+                    for index, (question, _) in enumerate(OVERVIEW_FAQS)
+>>>>>>> main
                 ],
                 class_="card",
             ),
@@ -984,6 +1094,7 @@ app_ui = ui.page_fluid(
     ui.div(
         sidebar,
         ui.div(ui.output_ui("page_content"), class_="content-panel"),
+        ui.div(chat_ui(), class_="assistant-panel"),
         class_="dashboard-shell",
     ),
 )
@@ -1247,14 +1358,16 @@ def server(input, output, session):
     @render_widget
     def overview_time():
         d = OVERVIEW_DAILY
+        chart_dates = d.date.dt.strftime("%Y-%m-%d")
         fig = go.Figure()
-        fig.add_trace(go.Scattergl(x=d.date, y=d.actual * 100, name="Actual", mode="lines+markers"))
-        fig.add_trace(go.Scattergl(x=d.date, y=d.target * 100, name="Target", mode="lines", line=dict(dash="dash")))
+        fig.add_trace(go.Scattergl(x=chart_dates, y=d.actual * 100, name="Actual", mode="lines+markers"))
+        fig.add_trace(go.Scattergl(x=chart_dates, y=d.target * 100, name="Target", mode="lines", line=dict(dash="dash")))
         fig.update_layout(
             height=300,
             margin=dict(l=30, r=10, t=10, b=30),
             yaxis_title="Productivity (%)",
             xaxis_title="",
+            xaxis=dict(type="date", tickformat="%b %d"),
             hovermode="x unified",
             uirevision="overview-time",
         )
@@ -1677,6 +1790,7 @@ def server(input, output, session):
             class_="card",
         )
 
+<<<<<<< HEAD
     # ---------------- AI Assistant ----------------
     chat_messages = reactive.Value(
         [
@@ -1688,14 +1802,19 @@ def server(input, output, session):
             }
         ]
     )
+=======
+    def make_faq_handler(index):
+        @reactive.effect
+        @reactive.event(getattr(input, f"faq_{index}"))
+        async def _faq():
+            question, answer = OVERVIEW_FAQS[index]
+            await assistant_chat.append_message({"role": "user", "content": question})
+            await assistant_chat.append_message({"role": "assistant", "content": answer})
+>>>>>>> main
 
-    def assistant_answer(question):
-        q = question.lower().strip()
-        avg = DATA.actual_productivity.mean()
-        target = DATA.targeted_productivity.mean()
-        below = (DATA.actual_productivity < DATA.targeted_productivity).mean()
-        top = DRIVER_SUMMARY.iloc[0].feature
+        return _faq
 
+<<<<<<< HEAD
         if q == FAQ_QUESTIONS[0].lower():
             recent_weeks = WEEKLY_HISTORY.actual.dropna()
             if len(recent_weeks) >= 2:
@@ -1744,15 +1863,25 @@ def server(input, output, session):
                 f"Team {int(i)} ({v * 100:.1f}%)" for i, v in teams.items()
             )
             return f"{below * 100:.1f}% of observations are below target. The three lowest team averages are {team_text}."
+=======
+    for _index in range(len(OVERVIEW_FAQS)):
+        make_faq_handler(_index)
+>>>>>>> main
 
-        if any(word in q for word in ["factor", "driver", "affect"]):
-            factors = ", ".join(pretty_feature(x) for x in DRIVER_SUMMARY.head(5).feature)
-            return f"The strongest simple associations in this dashboard are: {factors}."
+    def chart_series(name, x_values, y_values):
+        return {
+            "name": name,
+            "points": list(zip(x_values, y_values)),
+        }
 
-        if "forecast" in q or "next week" in q:
-            forecast = weekly_forecast_data().forecast.dropna()
-            return f"The current rolling-trend demo forecasts {fmt_pct(forecast.iloc[0])} for next week. Replace it with your validated forecasting model before the final presentation."
+    def chart_context_for_page():
+        current_page = page_state()
+        charts = []
+        filters = {}
+        date_range = (DATA.date.min(), DATA.date.max())
+        kpis = {}
 
+<<<<<<< HEAD
         if "fall" in q or "low" in q:
             return f"Average productivity is {fmt_pct(avg)} versus an average target of {fmt_pct(target)}. The largest simple association is {pretty_feature(top)}."
 
@@ -1791,6 +1920,114 @@ def server(input, output, session):
 
     for _index in range(len(FAQ_QUESTIONS)):
         make_quick_handler(_index)
+=======
+        if current_page == "overview":
+            daily = OVERVIEW_DAILY
+            departments = DEPARTMENT_SUMMARY
+            charts = [
+                {"type": "line", "title": "Actual vs Target Productivity Over Time", "x_label": "Date", "y_label": "Productivity (%)", "series": [
+                    chart_series("Actual", daily.date, daily.actual * 100),
+                    chart_series("Target", daily.date, daily.target * 100),
+                ]},
+                {"type": "grouped bar", "title": "Productivity by Department", "x_label": "Department", "y_label": "Productivity", "series": [
+                    chart_series("Actual", departments.department, departments.actual),
+                    chart_series("Target", departments.department, departments.target),
+                ]},
+            ]
+            teams = TEAM_SUMMARY.copy()
+            charts.append({"type": "horizontal bar", "title": "Avg. Productivity by Team", "x_label": "Productivity", "y_label": "Team", "series": [
+                chart_series("Actual productivity", "Team " + teams.team.astype(int).astype(str), teams.actual_productivity * 100)
+            ]})
+            drivers = DRIVER_SUMMARY.head(7).copy()
+            charts.append({"type": "horizontal bar", "title": "Top Drivers Associated with Productivity", "x_label": "Absolute association", "y_label": "Feature", "series": [
+                chart_series("Association", drivers.feature.map(pretty_feature), drivers.importance)
+            ]})
+            avg = DATA.actual_productivity.mean()
+            target = DATA.targeted_productivity.mean()
+            kpis = {
+                "Average productivity": fmt_pct(avg),
+                "Target achievement": fmt_pct(avg / target),
+                "Below-target rate": fmt_pct((DATA.actual_productivity < DATA.targeted_productivity).mean()),
+                "Average incentive": fmt_num(DATA.incentive.mean()),
+            }
+        elif current_page == "drivers":
+            drivers = DRIVER_SUMMARY.copy()
+            charts.append({"type": "horizontal bar", "title": "Feature Importance (Global)", "x_label": "Absolute association", "y_label": "Feature", "series": [
+                chart_series("Association", drivers.feature.map(pretty_feature), drivers.importance)
+            ]})
+            for column, title, x_label in [
+                ("incentive", "Incentive vs Productivity", "Incentive"),
+                ("idle_time", "Idle Time vs Productivity", "Idle Time"),
+                ("over_time", "Overtime vs Productivity", "Overtime"),
+            ]:
+                points = DATA[[column, "actual_productivity"]].dropna()
+                charts.append({"type": "scatter", "title": title, "x_label": x_label, "y_label": "Actual Productivity (%)", "series": [
+                    chart_series("Observations", points[column], points.actual_productivity * 100)
+                ]})
+            kpis = {"Dataset observations": len(DATA), "Average productivity": fmt_pct(DATA.actual_productivity.mean())}
+        elif current_page == "diagnostics":
+            visible_data = diagnostic_view()
+            filters = {
+                "date": input.diag_date() or "All dates",
+                "department": input.diag_department(),
+                "team": input.diag_team(),
+            }
+            selected_date = input.diag_date()
+            date_range = (selected_date, selected_date) if selected_date else (DATA.date.min(), DATA.date.max())
+            heatmap = HEATMAP_SUMMARY * 100
+            heatmap_series = [
+                chart_series(str(department), heatmap.columns, row.values)
+                for department, row in heatmap.iterrows()
+            ]
+            charts.extend([
+                {"type": "heatmap", "title": "Productivity Heatmap", "x_label": "Day", "y_label": "Department", "series": heatmap_series},
+            ])
+            low_high = LOW_HIGH_SUMMARY.melt(id_vars="Feature", value_vars=["Low Productivity", "High Productivity"], var_name="Group", value_name="Value")
+            low_high_series = []
+            for group in low_high.Group.unique():
+                selected = low_high[low_high.Group == group]
+                low_high_series.append(chart_series(group, selected.Feature, selected.Value))
+            charts.append({"type": "grouped bar", "title": "Low vs High Productivity Comparison", "x_label": "Feature", "y_label": "Average value", "series": low_high_series})
+            if not visible_data.empty:
+                kpis = {
+                    "Filtered observations": len(visible_data),
+                    "Actual productivity": fmt_pct(visible_data.actual_productivity.mean()),
+                    "Target productivity": fmt_pct(visible_data.targeted_productivity.mean()),
+                    "Gap vs target": f"{(visible_data.actual_productivity.mean() - visible_data.targeted_productivity.mean()) * 100:+.1f} pp",
+                }
+            else:
+                kpis = {"Filtered observations": 0}
+        elif current_page == "forecasting":
+            forecast = weekly_forecast_data()
+            charts = [{"type": "line with interval", "title": "Weekly Productivity Forecast (Next 4 Weeks)", "x_label": "Week", "y_label": "Productivity (%)", "series": [
+                chart_series("Actual", forecast.date, forecast.actual * 100),
+                chart_series("Forecast", forecast.date, forecast.forecast * 100),
+                chart_series("Lower bound", forecast.date, forecast.lower * 100),
+                chart_series("Upper bound", forecast.date, forecast.upper * 100),
+            ]}]
+            next_value = forecast.forecast.dropna().iloc[0]
+            kpis = {"Next week forecast": fmt_pct(next_value), "Target": fmt_pct(DATA.targeted_productivity.mean())}
+        elif current_page == "simulator":
+            x, prediction = simulated_prediction()
+            baseline = DATA[FEATURES].mean(numeric_only=True)
+            coefficients = {"incentive": 0.005, "idle_time": -0.0027, "over_time": -0.00006, "smv": 0.0021, "no_of_workers": 0.0005, "no_of_style_change": -0.018, "wip": 0.00025, "idle_men": -0.003}
+            contributions = pd.Series({pretty_feature(feature): (x[feature] - baseline[feature]) * coefficients[feature] for feature in FEATURES}).sort_values()
+            contributions = contributions.reindex(contributions.abs().sort_values(ascending=False).index).head(7).sort_values()
+            charts = [{"type": "horizontal contribution bar", "title": "What Influenced This Prediction?", "x_label": "Contribution to prediction (demo proxy)", "y_label": "Feature", "series": [
+                chart_series("Contribution", contributions.index, contributions.values)
+            ]}]
+            kpis = {"Predicted productivity": fmt_pct(prediction), "Target": fmt_pct(input.sim_target()), "Department": input.sim_department()}
+
+        return build_chart_context(
+            charts,
+            page=current_page,
+            filters=filters,
+            date_range=date_range,
+            kpis=kpis,
+        )
+
+    assistant_chat = register_chat(chart_context_for_page)
+>>>>>>> main
 
 
 app = App(app_ui, server)
