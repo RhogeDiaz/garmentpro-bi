@@ -1,0 +1,1 @@
+"""Local GarmentPro dashboard insight assistant."""
