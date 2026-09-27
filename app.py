@@ -473,6 +473,30 @@ html, body {
   padding: 28px;
 }
 
+.page-workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+    align-items: start;
+}
+
+.page-workspace.has-chat {
+    grid-template-columns: minmax(0, 1fr) 290px;
+}
+
+.chat-sidebar {
+    position: sticky;
+    top: 18px;
+    min-width: 0;
+}
+
+.chat-compose {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    margin-top: 10px;
+}
+
 .page-title {
   font-size: 29px;
   font-weight: 800;
@@ -577,6 +601,11 @@ html, body {
   .brand { white-space: normal; }
 }
 
+@media (max-width: 1100px) {
+    .page-workspace.has-chat { grid-template-columns: minmax(0, 1fr); }
+    .chat-sidebar { position: static; }
+}
+
 @media (max-width: 700px) {
   .dashboard-shell { grid-template-columns: 1fr; }
   .nav-panel { position: relative; height: auto; min-height: unset; }
@@ -612,7 +641,6 @@ NAV_ITEMS = [
     ("diagnostics", "⌁  Diagnostics"),
     ("forecasting", "◔  Forecasting"),
     ("simulator", "⚙  Simulator"),
-    ("assistant", "☁  AI Assistant"),
     ("about", "ⓘ  About"),
 ]
 
@@ -629,6 +657,13 @@ sidebar = ui.div(
     class_="nav-panel",
 )
 
+FAQ_QUESTIONS = [
+    "Why did productivity fall last week?",
+    "Which teams are below target?",
+    "What factors affect productivity most?",
+    "What is the forecast for next week?",
+]
+
 
 OVERVIEW_UI = page_shell(
     "1. Executive Overview",
@@ -637,8 +672,13 @@ OVERVIEW_UI = page_shell(
         ui.output_ui("ov_kpi_1"),
         ui.output_ui("ov_kpi_2"),
         ui.output_ui("ov_kpi_3"),
+        col_widths=[4, 4, 4],
+    ),
+    ui.layout_columns(
         ui.output_ui("ov_kpi_4"),
-        col_widths=[3, 3, 3, 3],
+        ui.output_ui("ov_kpi_5"),
+        ui.output_ui("ov_kpi_6"),
+        col_widths=[4, 4, 4],
     ),
     ui.layout_columns(
         ui.div(
@@ -675,13 +715,8 @@ OVERVIEW_UI = page_shell(
             ui.div(
                 ui.div("Productivity Assistant", class_="card-title"),
                 *[
-                    ui.div(q, class_="question-chip")
-                    for q in [
-                        "Why did productivity fall last week?",
-                        "Which teams are below target?",
-                        "What factors affect productivity most?",
-                        "What is the forecast for next week?",
-                    ]
+                    ui.input_action_button(f"faq_{i}", q, class_="question-chip")
+                    for i, q in enumerate(FAQ_QUESTIONS)
                 ],
                 class_="card",
             ),
@@ -871,50 +906,6 @@ SIMULATOR_UI = page_shell(
 )
 
 
-ASSISTANT_UI = page_shell(
-    "6. AI Productivity Assistant",
-    "Ask questions about the data, trends and model outputs.",
-    ui.layout_columns(
-        ui.div(
-            ui.div(
-                ui.div("Productivity Assistant", class_="card-title"),
-                ui.div(ui.output_ui("chat_history"), class_="chatbox"),
-                ui.div(
-                    ui.input_text(
-                        "chat_input",
-                        "",
-                        placeholder="Ask: Why did productivity fall last week?",
-                    ),
-                    ui.input_action_button("chat_send", "➤", class_="btn-primary"),
-                    class_="mt-2",
-                ),
-                class_="card",
-            ),
-            width=9,
-        ),
-        ui.div(
-            ui.div(
-                ui.div("Quick Suggestions", class_="card-title"),
-                *[
-                    ui.input_action_button(f"quick_{i}", q, class_="question-chip")
-                    for i, q in enumerate(
-                        [
-                            "Why did productivity fall last week?",
-                            "Which teams are below target?",
-                            "What factors affect productivity most?",
-                            "What is the forecast for next week?",
-                            "What if we increase overtime by 10%?",
-                        ]
-                    )
-                ],
-                class_="card",
-            ),
-            width=3,
-        ),
-    ),
-)
-
-
 ABOUT_UI = page_shell(
     "About the Project",
     "Business Intelligence final project — Productivity Management for a Bangladesh-based garment company.",
@@ -982,7 +973,6 @@ PAGE_MAP = {
     "diagnostics": DIAGNOSTICS_UI,
     "forecasting": FORECAST_UI,
     "simulator": SIMULATOR_UI,
-    "assistant": ASSISTANT_UI,
     "about": ABOUT_UI,
 }
 
@@ -1018,7 +1008,30 @@ def server(input, output, session):
 
     @render.ui
     def page_content():
-        return PAGE_MAP[page_state()]
+        current_page = page_state()
+        has_chat = current_page not in {"simulator", "about"}
+        content = [PAGE_MAP[current_page]]
+        if has_chat:
+            content.append(
+                ui.div(
+                    ui.div(
+                        ui.div("Productivity Assistant", class_="card-title"),
+                        ui.div(ui.output_ui("chat_history"), class_="chatbox"),
+                        ui.div(
+                            ui.input_text(
+                                "chat_input",
+                                "",
+                                placeholder="Ask about productivity, teams, or trends",
+                            ),
+                            ui.input_action_button("chat_send", "Send", class_="btn-primary"),
+                            class_="chat-compose",
+                        ),
+                        class_="card",
+                    ),
+                    class_="chat-sidebar",
+                )
+            )
+        return ui.div(*content, class_="page-workspace has-chat" if has_chat else "page-workspace")
 
     # ---------------- Overview ----------------
     @render.ui
@@ -1052,10 +1065,30 @@ def server(input, output, session):
 
     @render.ui
     def ov_kpi_4():
+        gap = DATA.actual_productivity.mean() - DATA.targeted_productivity.mean()
+        value = DATA.incentive.mean() / gap if not np.isclose(gap, 0) else np.nan
         return kpi_card(
-            "Avg. Incentive (team-day)",
-            fmt_num(DATA.incentive.mean()),
-            "dataset average",
+            "Incentive",
+            fmt_num(value) if np.isfinite(value) else "N/A",
+            "mean incentive / mean productivity gap",
+        )
+
+    @render.ui
+    def ov_kpi_5():
+        idle_resource_drain = (DATA.idle_time * DATA.idle_men).mean()
+        return kpi_card(
+            "Idle Resource Drain",
+            fmt_num(idle_resource_drain),
+            "mean idle time × idle personnel",
+        )
+
+    @render.ui
+    def ov_kpi_6():
+        staffing_consistency = (DATA.no_of_workers / DATA.smv.replace(0, np.nan)).mean()
+        return kpi_card(
+            "Staffing Allocation Consistency",
+            fmt_num(staffing_consistency),
+            "mean workers / SMV",
         )
 
     @render_widget
@@ -1511,6 +1544,48 @@ def server(input, output, session):
         below = (DATA.actual_productivity < DATA.targeted_productivity).mean()
         top = DRIVER_SUMMARY.iloc[0].feature
 
+        if q == FAQ_QUESTIONS[0].lower():
+            recent_weeks = WEEKLY_HISTORY.actual.dropna()
+            if len(recent_weeks) >= 2:
+                change = (recent_weeks.iloc[-1] - recent_weeks.iloc[-2]) * 100
+                direction = "increased" if change >= 0 else "decreased"
+                return (
+                    f"The latest weekly average {direction} by {abs(change):.1f} percentage points "
+                    "compared with the previous week. Review the Overview trend and Diagnostics "
+                    "filters to locate the teams and operating conditions behind the change; "
+                    "the correlations shown are associations, not proof of cause."
+                )
+            return (
+                f"There is not enough weekly history to compare periods. Overall productivity is "
+                f"{fmt_pct(avg)} against an average target of {fmt_pct(target)}."
+            )
+
+        if q == FAQ_QUESTIONS[1].lower():
+            teams = DATA.groupby("team").actual_productivity.mean().sort_values().head(3)
+            team_text = ", ".join(
+                f"Team {int(team)} ({value * 100:.1f}%)" for team, value in teams.items()
+            )
+            return (
+                f"{below * 100:.1f}% of observations are below their target. The three lowest "
+                f"team averages are {team_text}. Compare each team's average with its target "
+                "in the Diagnostics view before deciding where to intervene."
+            )
+
+        if q == FAQ_QUESTIONS[2].lower():
+            factors = ", ".join(pretty_feature(feature) for feature in DRIVER_SUMMARY.head(5).feature)
+            return (
+                f"The strongest simple associations with productivity in this dataset are {factors}. "
+                "These are correlations, so they describe patterns rather than establish cause."
+            )
+
+        if q == FAQ_QUESTIONS[3].lower():
+            forecast = weekly_forecast_data().forecast.dropna()
+            return (
+                f"The current rolling-trend estimate for next week is {fmt_pct(forecast.iloc[0])}. "
+                "Treat it as a demonstration forecast until it is replaced and validated against "
+                "held-out data."
+            )
+
         if "below target" in q or "under target" in q:
             teams = DATA.groupby("team").actual_productivity.mean().sort_values().head(3)
             team_text = ", ".join(
@@ -1559,19 +1634,11 @@ def server(input, output, session):
                 ]
             )
 
-    QUICK_QUESTIONS = [
-        "Why did productivity fall last week?",
-        "Which teams are below target?",
-        "What factors affect productivity most?",
-        "What is the forecast for next week?",
-        "What if we increase overtime by 10%?",
-    ]
-
     def make_quick_handler(index):
         @reactive.effect
-        @reactive.event(getattr(input, f"quick_{index}"))
+        @reactive.event(getattr(input, f"faq_{index}"))
         def _quick():
-            question = QUICK_QUESTIONS[index]
+            question = FAQ_QUESTIONS[index]
             chat_messages.set(
                 chat_messages()
                 + [
@@ -1582,7 +1649,7 @@ def server(input, output, session):
 
         return _quick
 
-    for _index in range(len(QUICK_QUESTIONS)):
+    for _index in range(len(FAQ_QUESTIONS)):
         make_quick_handler(_index)
 
 
